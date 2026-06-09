@@ -20,16 +20,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# S3 Config
-S3_BUCKET = "rezum.analyzer "
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_KEY"),
-    region_name="ap-south-1"  # change to your region
-)
-
-client = InferenceClient(api_key=os.getenv("HF_API_KEY"))
+S3_BUCKET = "rezum.analyzer"
+client = InferenceClient(api_key=os.getenv("API_KEY"))
 
 @app.get("/")
 def home():
@@ -37,13 +29,17 @@ def home():
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name="ap-south-1"
+    )
     s3_key = None
     try:
-        # Read file content
         file_content = await file.read()
         s3_key = f"resumes/{uuid.uuid4().hex}.pdf"
 
-        # Upload to S3
         s3_client.put_object(
             Bucket=S3_BUCKET,
             Key=s3_key,
@@ -51,11 +47,9 @@ async def upload_resume(file: UploadFile = File(...)):
             ContentType="application/pdf"
         )
 
-        # Download from S3 to temp file for pdfplumber
         temp_file = f"temp_{uuid.uuid4().hex}.pdf"
         s3_client.download_file(S3_BUCKET, s3_key, temp_file)
 
-        # Extract text
         extracted_text = ""
         with pdfplumber.open(temp_file) as pdf:
             for page in pdf.pages:
@@ -63,10 +57,8 @@ async def upload_resume(file: UploadFile = File(...)):
                 if text:
                     extracted_text += text + "\n"
 
-        # Cleanup temp file
         os.remove(temp_file)
 
-        # AI Analysis
         prompt = f"""
 Analyze this resume and provide:
 1. Resume Score (0-100)
@@ -85,7 +77,6 @@ Resume:
 
         ai_feedback = response.choices[0].message.content
 
-        # Delete from S3
         s3_client.delete_object(Bucket=S3_BUCKET, Key=s3_key)
 
         return JSONResponse(
@@ -98,7 +89,6 @@ Resume:
         )
 
     except Exception as e:
-        # Delete from S3 if error occurs
         if s3_key:
             s3_client.delete_object(Bucket=S3_BUCKET, Key=s3_key)
         return JSONResponse(

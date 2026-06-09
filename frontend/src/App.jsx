@@ -17,7 +17,7 @@ function App() {
       formData.append("file", file);
 
       const response = await axios.post(
-        "/api/upload-resume/",
+        "https://re-a5f04dd6eec6467594872f0a528616a2.ecs.ap-south-1.on.aws/upload-resume/",
         formData,
         {
           headers: {

@@ -1,10 +1,14 @@
 import os
 import uuid
+import boto3
 import pdfplumber
+from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from huggingface_hub import InferenceClient
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -16,18 +20,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = InferenceClient(api_key="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")
-
-@app.options("/upload-resume/")
-async def options_handler():
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
+S3_BUCKET = "rezum.analyzer"
+client = InferenceClient(api_key=os.getenv("API_KEY"))
 
 @app.get("/")
 def home():
@@ -35,10 +29,26 @@ def home():
 
 @app.post("/upload-resume/")
 async def upload_resume(file: UploadFile = File(...)):
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name="ap-south-1"
+    )
+    s3_key = None
     try:
+        file_content = await file.read()
+        s3_key = f"resumes/{uuid.uuid4().hex}.pdf"
+
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            Body=file_content,
+            ContentType="application/pdf"
+        )
+
         temp_file = f"temp_{uuid.uuid4().hex}.pdf"
-        with open(temp_file, "wb") as f:
-            f.write(await file.read())
+        s3_client.download_file(S3_BUCKET, s3_key, temp_file)
 
         extracted_text = ""
         with pdfplumber.open(temp_file) as pdf:
@@ -46,6 +56,8 @@ async def upload_resume(file: UploadFile = File(...)):
                 text = page.extract_text()
                 if text:
                     extracted_text += text + "\n"
+
+        os.remove(temp_file)
 
         prompt = f"""
 Analyze this resume and provide:
@@ -65,8 +77,7 @@ Resume:
 
         ai_feedback = response.choices[0].message.content
 
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+        s3_client.delete_object(Bucket=S3_BUCKET, Key=s3_key)
 
         return JSONResponse(
             content={
@@ -78,6 +89,8 @@ Resume:
         )
 
     except Exception as e:
+        if s3_key:
+            s3_client.delete_object(Bucket=S3_BUCKET, Key=s3_key)
         return JSONResponse(
             content={"error": str(e)},
             headers={"Access-Control-Allow-Origin": "*"}
